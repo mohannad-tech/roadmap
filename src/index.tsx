@@ -1,9 +1,8 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { pickSaveFile, pickOpenFile, writeToHandle, readFromHandle, downloadJson, uploadJson } from "./fileStore";
 
 type Item = { id: string; title: string; status: "backlog"|"dev"|"product"|"done"; start: string; end: string; progress: number; };
 const STATUSES = [
@@ -19,7 +18,21 @@ function addDays(base: Date | string, n: number){ const d=new Date(base); d.setD
 function fmt(d: Date | string){ return new Date(d).toISOString().slice(0,10); }
 function clamp(n: number, lo: number, hi: number){ return Math.max(lo, Math.min(hi, n)); }
 
-const LS_ITEMS = "ec_file_items";
+async function apiLoad(): Promise<Item[]|undefined>{
+  try{
+    const r = await fetch("/api/roadmap");
+    if (!r.ok) throw new Error("load "+r.status);
+    const j = await r.json();
+    if (Array.isArray(j?.items)) return j.items;
+    return [];
+  }catch(e){ console.error(e); return undefined; }
+}
+async function apiSave(items: Item[]){
+  try{
+    const r = await fetch("/api/roadmap", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ items }) });
+    if (!r.ok) throw new Error("save "+r.status);
+  }catch(e){ console.error(e); }
+}
 
 export default function App(){
   const defaults: Item[] = [
@@ -28,59 +41,37 @@ export default function App(){
     { id: crypto.randomUUID(), title:"Compounding Workflow", status:"done", start: addDays(new Date(),-30).toISOString(), end:addDays(new Date(),-2).toISOString(), progress:100 },
   ];
 
-  const [items, setItems] = useState<Item[]>(() => { try{const s=localStorage.getItem(LS_ITEMS); if(s) return JSON.parse(s);}catch{} return defaults; });
+  const [items, setItems] = useState<Item[]>(defaults);
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [fileHandle, setFileHandle] = useState<FileSystemFileHandle | null>(null);
-  const [fileStatus, setFileStatus] = useState<string>("Not connected");
-  const [autoSave, setAutoSave] = useState(true);
-
-  useEffect(()=>{ try{ localStorage.setItem(LS_ITEMS, JSON.stringify(items)); }catch{} }, [items]);
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(()=>{
-    if (!autoSave || !fileHandle) return;
-    const h = setTimeout(async ()=>{
-      try { setSaving(true); await writeToHandle(fileHandle, { items }); setFileStatus("Saved to file"); }
-      catch(e){ console.error(e); setFileStatus("File save failed"); }
-      finally { setSaving(false); }
-    }, 700);
-    return ()=>clearTimeout(h);
-  }, [items, autoSave, fileHandle]);
+    (async()=>{
+      setLoading(true); setError(null);
+      const data = await apiLoad();
+      if (Array.isArray(data)) { setItems(data); setHasLoaded(true); }
+      else setError("Server unavailable. Try again later.");
+      setLoading(false);
+    })();
+  }, []);
 
-  async function connectNewFile(){
-    const handle = await pickSaveFile();
-    if (handle){
-      setFileHandle(handle);
-      setFileStatus("Connected to file");
-      try { await writeToHandle(handle, { items }); setFileStatus("Saved to file"); } catch {}
-    }
-  }
-  async function openExistingFile(){
-    const handle = await pickOpenFile();
-    if (handle){
-      setFileHandle(handle);
-      const data = await readFromHandle(handle);
-      if (data?.items && Array.isArray(data.items)) setItems(data.items);
-      setFileStatus("Connected to file");
-    }
-  }
-  async function saveNow(){
-    if (fileHandle){
-      try { setSaving(true); await writeToHandle(fileHandle, { items }); setFileStatus("Saved to file"); }
-      catch(e){ console.error(e); setFileStatus("File save failed"); }
-      finally { setSaving(false); }
-    } else {
-      downloadJson("ec-roadmap.json", { items });
-      setFileStatus("Downloaded JSON");
-    }
-  }
-  async function importJson(){
-    const data = await uploadJson();
-    if (data?.items && Array.isArray(data.items)) setItems(data.items);
-  }
+  useEffect(()=>{
+    if (!hasLoaded) return;
+    const h = setTimeout(async ()=>{ try{ setSaving(true); await apiSave(items); } finally{ setSaving(false); } }, 700);
+    return ()=>clearTimeout(h);
+  }, [items, hasLoaded]);
+
+  function patch(id:string, q:Partial<Item>){ setItems(p=>p.map(x=>x.id===id?{...x,...q}:x)); }
+  function addItem(){ setItems(p=>[{ id: crypto.randomUUID(), title:"New Block", status:"backlog", start: new Date().toISOString(), end: new Date(Date.now()+14*864e5).toISOString(), progress:0 }, ...p]); }
+  function removeItem(id:string){ setItems(p=>p.filter(x=>x.id!==id)); }
+
+  const startAnchor = useMemo(()=>addDays(new Date(), -14), []);
+  const endAnchor = useMemo(()=>addDays(startAnchor, WINDOW_DAYS), [startAnchor]);
 
   return (
     <div className="min-h-screen">
-      {/* Header */}
       <div className="border-b border-[var(--line)] bg-white sticky top-0 z-10">
         <div className="section py-6 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -88,36 +79,30 @@ export default function App(){
             <div className="title-xl">EC Roadmap</div>
           </div>
           <div className="flex items-center gap-3">
-            <Button onClick={connectNewFile}>Connect Save File</Button>
-            <Button variant="outline" onClick={openExistingFile}>Open File</Button>
-            <Button onClick={saveNow}>Save Now</Button>
-            <label className="text-sm inline-flex items-center gap-2 select-none"><input type="checkbox" checked={autoSave} onChange={e=>setAutoSave(e.target.checked)} /> Auto‑save</label>
-            <span className="text-sm text-gray-500">{saving? "Saving…" : fileStatus}</span>
+            <Button onClick={addItem}>Add Block</Button>
+            <Button onClick={()=>window.location.reload()} variant="outline">Reload</Button>
+            <Button onClick={()=>apiSave(items)}>Save Now</Button>
+            <span className="text-sm text-gray-500">{saving? "Saving…" : "Saved"}</span>
           </div>
         </div>
       </div>
 
-      {/* Section: Items */}
+      {loading && <div className="bg-amber-50 text-amber-700 border-b border-amber-200"><div className="section py-3 text-sm">Loading from server…</div></div>}
+      {error && !loading && <div className="bg-rose-50 text-rose-700 border-b border-rose-200"><div className="section py-3 text-sm">{error}</div></div>}
+
       <div className="section mt-8 space-y-6">
         <h2 className="heading">Roadmap Items</h2>
         {items.map(it=>(
           <Card key={it.id} className="p-0">
             <CardContent className="pt-6">
-              {/* Title full width */}
               <div className="mb-4">
                 <label className="block text-sm text-gray-600 mb-1">Title</label>
-                <Input value={it.title} onChange={e=>setItems(p=>p.map(x=>x.id===it.id?{...x,title:e.target.value}:x))} />
+                <Input value={it.title} onChange={e=>patch(it.id,{title:e.target.value})} />
               </div>
-
-              {/* Controls row */}
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                 <div>
                   <label className="block text-sm text-gray-600 mb-1">Status</label>
-                  <select
-                    className="w-full px-3 py-2 rounded-xl border border-[var(--line)] bg-white"
-                    value={it.status}
-                    onChange={e=>setItems(p=>p.map(x=>x.id===it.id?{...x,status:e.target.value as Item['status']}:x))}
-                  >
+                  <select className="w-full px-3 py-2 rounded-xl border border-[var(--line)] bg-white" value={it.status} onChange={e=>patch(it.id,{status:e.target.value as Item['status']})}>
                     <option value="backlog">Backlog</option>
                     <option value="dev">In Dev</option>
                     <option value="product">Product</option>
@@ -126,45 +111,34 @@ export default function App(){
                 </div>
                 <div>
                   <label className="block text-sm text-gray-600 mb-1">Start</label>
-                  <Input type="date" value={fmt(it.start)} onChange={e=>setItems(p=>p.map(x=>x.id===it.id?{...x,start:new Date(e.target.value).toISOString()}:x))}/>
+                  <Input type="date" value={fmt(it.start)} onChange={e=>patch(it.id,{start:new Date(e.target.value).toISOString()})}/>
                 </div>
                 <div>
                   <label className="block text-sm text-gray-600 mb-1">Target</label>
-                  <Input type="date" value={fmt(it.end)} onChange={e=>setItems(p=>p.map(x=>x.id===it.id?{...x,end:new Date(e.target.value).toISOString()}:x))}/>
+                  <Input type="date" value={fmt(it.end)} onChange={e=>patch(it.id,{end:new Date(e.target.value).toISOString()})}/>
                 </div>
                 <div>
                   <label className="block text-sm text-gray-600 mb-1">Progress</label>
-                  <input type="range" min={0} max={100} value={it.progress} onChange={e=>setItems(p=>p.map(x=>x.id===it.id?{...x,progress:Number(e.target.value)}:x))} className="w-full"/>
+                  <input type="range" min={0} max={100} value={it.progress} onChange={e=>patch(it.id,{progress:Number(e.target.value)})} className="w-full"/>
                   <div className="text-xs text-right text-gray-600 mt-1">{it.progress}%</div>
                 </div>
               </div>
-
               <div className="mt-5 flex justify-end">
-                <Button variant="danger" onClick={()=>setItems(p=>p.filter(x=>x.id!==it.id))}>Remove</Button>
+                <Button variant="danger" onClick={()=>removeItem(it.id)}>Remove</Button>
               </div>
             </CardContent>
           </Card>
         ))}
-
-        <div className="flex gap-3">
-          <Button onClick={()=>setItems(p=>[{ id: crypto.randomUUID(), title:"New Block", status:"backlog", start: new Date().toISOString(), end: new Date(Date.now()+14*864e5).toISOString(), progress:0 }, ...p])}>Add Block</Button>
-          <Button variant="outline" onClick={()=>downloadJson('ec-roadmap.json',{ items })}>Download JSON</Button>
-          <Button variant="outline" onClick={importJson}>Upload JSON</Button>
-        </div>
       </div>
 
-      {/* Section: Timeline */}
-      <Timeline items={items} onChange={(id,p)=>setItems(prev=>prev.map(x=>x.id===id?{...x,...p}:x))} />
+      <Timeline items={items} onChange={(id,p)=>patch(id,p)} startAnchor={startAnchor} endAnchor={endAnchor} />
     </div>
   );
 }
 
-function Timeline({ items, onChange }:{ items:Item[]; onChange:(id:string,p:Partial<Item>)=>void; }){
-  const startAnchor = useMemo(()=>{ const d=new Date(); d.setDate(d.getDate()-14); return d; }, []);
-  const endAnchor = useMemo(()=>{ const d=new Date(startAnchor); d.setDate(d.getDate()+WINDOW_DAYS); return d; }, [startAnchor]);
+function Timeline({ items, onChange, startAnchor, endAnchor }:{ items:Item[]; onChange:(id:string,p:Partial<Item>)=>void; startAnchor:Date; endAnchor:Date; }){
   const totalDays = Math.max(1, Math.ceil((+endAnchor - +startAnchor)/(1000*60*60*24)));
   function dateToPx(d: string){ const days = Math.round((+new Date(d) - +startAnchor)/(1000*60*60*24)); return clamp(days,0,totalDays)*DAY_PX; }
-
   return (
     <div className="section mt-10 mb-16">
       <h2 className="heading mb-4">Timeline</h2>
