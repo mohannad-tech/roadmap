@@ -1,0 +1,44 @@
+// /api/roadmap.js
+export default async function handler(req, res) {
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+  if (!token) {
+    res.status(500).json({ error: 'Missing BLOB_READ_WRITE_TOKEN' });
+    return;
+  }
+
+  const { put, list } = await import('@vercel/blob'); // dynamic import is fine in JS
+  const KEY = 'ec-roadmap.json';
+
+  try {
+    if (req.method === 'GET') {
+      const { blobs } = await list({ prefix: KEY, token });
+      if (!blobs || blobs.length === 0) {
+        res.setHeader('content-type', 'application/json');
+        res.status(200).send(JSON.stringify({ items: [] }));
+        return;
+      }
+      const url = blobs[0].url;
+      const data = await fetch(url).then(r => r.ok ? r.json() : { items: [] }).catch(() => ({ items: [] }));
+      res.setHeader('content-type', 'application/json');
+      res.status(200).send(JSON.stringify(data ?? { items: [] }));
+      return;
+    }
+
+    if (req.method === 'POST') {
+      const body = req.body || { items: [] };
+      await put(KEY, JSON.stringify(body), {
+        access: 'public',
+        contentType: 'application/json',
+        token,
+        addRandomSuffix: false
+      });
+      res.setHeader('content-type', 'application/json');
+      res.status(200).send(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    res.status(405).send('Method Not Allowed');
+  } catch (e) {
+    res.status(500).json({ error: e?.message || 'Server error' });
+  }
+}
