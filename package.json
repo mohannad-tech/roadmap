@@ -1,7 +1,7 @@
 {
-  "name": "ec-roadmap-vercelblob",
+  "name": "ec-roadmap",
   "private": true,
-  "version": "7.0.0",
+  "version": "3.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,10 +10,11 @@
   },
   "dependencies": {
     "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "@vercel/blob": "^0.22.0"
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@types/node": "^20.12.12",
+    "@vercel/node": "^3.0.20",
     "@vitejs/plugin-react": "^4.3.1",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
